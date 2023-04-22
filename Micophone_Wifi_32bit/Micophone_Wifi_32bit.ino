@@ -1,28 +1,30 @@
-#include <M5StickCPlus.h>
 #include <driver/i2s.h>
 #include <WiFi.h>
 
 // Set these to your desired credentials.
-const char* ssid     = "Yurkovsky";
-const char* password = "Varsha2908";
+const char* ssid     = "ABC";
+const char* password = "06041985";
 
 // Use WiFiClient class to create TCP connections
 WiFiClient client;
-const int httpPort = 65432;
+const int destPort = 6000;
+//const char* destIp = "3.78.56.42";
+const char* destIp = "192.168.0.109";
 
+int ledPin = 13;
 // send microphone sample to wifi
 bool ifConnected = false;
-bool ifSending = false;
+bool ifSending = true;
 bool buttonPressed = false;
 // M5Stcikc status led
 #define LED_BUILTIN 10   // Set the GPIO pin where you connected your test LED or comment this line out if your dev board has a built-in LED
-#define NUM_SAMPLES 512
-#define BYTES_PER_SAMPLE 4
+#define NUM_SAMPLES 256
+#define BYTES_PER_SAMPLE 2
 #define SAMPLE_RATE 44100
-#define PIN_CLK     0
-#define PIN_DATA    34
+#define PIN_CLK     33
+#define PIN_DATA    32
 #define READ_LEN    (BYTES_PER_SAMPLE * NUM_SAMPLES)
-#define GAIN_FACTOR 10
+
 
 uint8_t BUFFER[READ_LEN] = {0};
 
@@ -44,8 +46,8 @@ void i2sInit() {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
         .sample_rate = SAMPLE_RATE, //44100
         .bits_per_sample =
-            I2S_BITS_PER_SAMPLE_32BIT,  // is fixed at 12bit, stereo, MSB
-        .channel_format = I2S_CHANNEL_FMT_ALL_RIGHT,
+            I2S_BITS_PER_SAMPLE_16BIT,  // is fixed at 12bit, stereo, MSB
+        .channel_format = I2S_CHANNEL_FMT_ALL_LEFT,
 #if ESP_IDF_VERSION > ESP_IDF_VERSION_VAL(4, 1, 0)
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
 #else
@@ -69,14 +71,10 @@ void i2sInit() {
 
     i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
     i2s_set_pin(I2S_NUM_0, &pin_config);
-    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_32BIT, I2S_CHANNEL_MONO); //44100
+    i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO); //44100
 }
 
 void setup() {
-    M5.begin();
-    M5.Lcd.setRotation(3);
-    M5.Lcd.fillScreen(GREEN);
-    M5.Lcd.setTextColor(BLACK, GREEN);
     Serial.begin(115200);
     delay(10);
 
@@ -94,27 +92,24 @@ void setup() {
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
-    M5.Lcd.setCursor(0, 0);
-    M5.Lcd.print(WiFi.localIP());
     
-    pinMode(LED_BUILTIN, OUTPUT); 
-
+    pinMode(ledPin, OUTPUT);
 
     i2sInit();
     xTaskCreate(mic_record_task, "mic_record_task", 2048, NULL, 1, NULL);
 }
 
 void loop() {
-  M5.update();
-  if (M5.BtnA.wasPressed()){
-    ifSending = !ifSending;
-  }
+  // M5.update();
+  // if (M5.BtnA.wasPressed()){
+  //   ifSending = !ifSending;
+  // }
   if (ifSending){
-    digitalWrite(LED_BUILTIN, !digitalRead(10));
+    digitalWrite(ledPin, !digitalRead(10));
   }else if (ifConnected){
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(ledPin, LOW);
   }else{
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(ledPin, HIGH);
   }
     if (WiFi.status() != WL_CONNECTED){ //check connection to network
       ifConnected = false;
@@ -125,11 +120,9 @@ void loop() {
       Serial.println("WiFi connected");
       Serial.println("IP address: ");
       Serial.println(WiFi.localIP());
-      M5.Lcd.setCursor(0, 0);
-      M5.Lcd.print(WiFi.localIP());
     }else if (!client.connected()) {
       // try to connect to the target ip
-      if (!client.connect("10.0.0.28", httpPort)) {
+      if (!client.connect(destIp, destPort)) {
         Serial.println("connection to client failed");
         ifConnected = false;
         // try to recconnect to network
