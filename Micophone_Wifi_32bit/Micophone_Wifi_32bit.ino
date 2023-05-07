@@ -1,44 +1,103 @@
 #include <driver/i2s.h>
 #include <WiFi.h>
 
+#include "SD.h"
+#include "SPI.h"
+
 // Set these to your desired credentials.
-const char* ssid     = "ABC";
-const char* password = "06041985";
+const char* wifiSsid     = "Pixel_JeniaY";
+const char* wifiPassword = "willbeok";
 
 // Use WiFiClient class to create TCP connections
 WiFiClient client;
 const int destPort = 6000;
-//const char* destIp = "3.78.56.42";
-const char* destIp = "192.168.0.109";
+// const char* destIp = "3.78.56.42";
+//const char* destIp = "192.168.0.114";
+const char* destIp = "192.168.105.95";
+const char* FILE_NAME = "/tmp.raw";
 
 int ledPin = 13;
-// send microphone sample to wifi
-bool ifConnected = false;
-bool ifSending = true;
-bool buttonPressed = false;
+
 // M5Stcikc status led
 #define LED_BUILTIN 10   // Set the GPIO pin where you connected your test LED or comment this line out if your dev board has a built-in LED
 #define NUM_SAMPLES 256
 #define BYTES_PER_SAMPLE 2
 #define SAMPLE_RATE 44100
+#define SEGMENT_LENGTH 4
 #define PIN_CLK     33
 #define PIN_DATA    32
 #define READ_LEN    (BYTES_PER_SAMPLE * NUM_SAMPLES)
 
 
-uint8_t BUFFER[READ_LEN] = {0};
+char BUFFER[READ_LEN] = {0};
 
 void mic_record_task(void *arg) {
     size_t bytesread;
+    size_t totalbytes;
+    delete_file();
     while (1) {
-        i2s_read(I2S_NUM_0, (char *)BUFFER, READ_LEN, &bytesread,(20 / portTICK_RATE_MS));
-        if (bytesread!=READ_LEN){
-          printf("i2s%d\n",int(bytesread));
+      i2s_read(I2S_NUM_0, BUFFER, READ_LEN, &bytesread, (20 / portTICK_RATE_MS));
+      // Serial.printf("%d Bytes read, total %d, total seconds %d \n", bytesread, totalbytes, bytes_to_sec(totalbytes));
+      if(bytesread > 0){
+        if(append_to_file(BUFFER, bytesread)) {
+          totalbytes += bytesread;
         }
-        if ((ifConnected) && (ifSending)){
-          client.write(BUFFER,bytesread);
+        if (bytes_to_sec(totalbytes) >= SEGMENT_LENGTH) {
+          Serial.printf("File reached %d bytes and %d seconds\n", totalbytes, bytes_to_sec(totalbytes));
+          send_file();
+          delete_file();
+          totalbytes = 0;
         }
+      }
     }
+}
+
+bool append_to_file(const char* BUFFER, size_t len) {
+  File file = SD.open(FILE_NAME, FILE_APPEND);
+
+  if(!file){
+      Serial.println("Failed to open file for appending");
+      return false;
+  }
+
+  bool res = file.write((uint8_t*)BUFFER, len);
+  file.close();
+
+  return res;
+}
+
+void delete_file(){
+  Serial.println("Deleting temp file");
+  SD.remove(FILE_NAME);
+}
+
+void send_file(){
+  Serial.println("Sending file to server.");
+  static uint8_t buffer[1024];
+  int bytesRead = 0;
+  File file = SD.open(FILE_NAME);
+  
+  Serial.printf("File size %d \n", file.size());
+
+  connectToServer(destIp, destPort);
+
+  if (client.connected()) {
+    Serial.println("Connected.");
+
+    while(file.available()) {
+      bytesRead = file.read(buffer, sizeof(buffer));
+      client.write(buffer, bytesRead);
+    } 
+    file.close(); 
+    Serial.println("File sent successfully.");
+  }
+  else {
+    Serial.println("No connection to server.");
+  }  
+}
+
+int bytes_to_sec(size_t bytes){
+  return bytes / SAMPLE_RATE / BYTES_PER_SAMPLE ;
 }
 
 void i2sInit() {
@@ -74,62 +133,87 @@ void i2sInit() {
     i2s_set_clk(I2S_NUM_0, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO); //44100
 }
 
-void setup() {
-    Serial.begin(115200);
-    delay(10);
+void connectToServer(const char* ip, int port) {
+  if (!client.connected()) {
+    Serial.println("Connecting to server.");
 
-    Serial.print("Connecting to ");
-    Serial.println(ssid);
+    client.connect(ip, port);
 
-    WiFi.begin(ssid, password);
+    if (!client.connected()) {
+      Serial.println("Failed to connect to server");
+    }  
+  } 
+}
 
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+void connectToWiFi(const char* ssid, const char* password) {
+  if (WiFi.status() != WL_CONNECTED){ 
+    Serial.println("Connecting to WiFi.");
+
+    WiFi.begin(ssid, password); 
+
+    while (WiFi.status() != WL_CONNECTED){
+      Serial.print(".");
+      delay(1000);
     }
 
-    Serial.println("");
-    Serial.println("WiFi connected");
+    Serial.println("\nWiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
+  }
+}
+
+void mountSDCard(){
+    Serial.println("Mounting SD Card");
     
+    int res = SD.begin(4);
+
+    if(!SD.begin(4)){
+        Serial.println("Card Mount Failed");
+    }
+
+    uint8_t cardType = SD.cardType();
+
+    if(cardType == CARD_NONE){
+        Serial.println("No SD card attached");
+        return;
+    }
+
+    Serial.print("SD Card Type: ");
+    if(cardType == CARD_MMC){
+        Serial.println("MMC");
+    } else if(cardType == CARD_SD){
+        Serial.println("SDSC");
+    } else if(cardType == CARD_SDHC){
+        Serial.println("SDHC");
+    } else {
+        Serial.println("UNKNOWN");
+    }
+}
+
+void setup() {
+    Serial.begin(9600);
+    delay(1000);
+
+    mountSDCard();
+   
     pinMode(ledPin, OUTPUT);
 
     i2sInit();
-    xTaskCreate(mic_record_task, "mic_record_task", 2048, NULL, 1, NULL);
+    xTaskCreate(mic_record_task, "mic_record_task", 4096, NULL, 1, NULL);
 }
 
 void loop() {
-  // M5.update();
-  // if (M5.BtnA.wasPressed()){
-  //   ifSending = !ifSending;
+  // if (ifSending){
+  //   digitalWrite(ledPin, !digitalRead(10));
+  // }else if (ifConnected){
+  //   digitalWrite(ledPin, LOW);
+  // }else{
+  //   digitalWrite(ledPin, HIGH);
   // }
-  if (ifSending){
-    digitalWrite(ledPin, !digitalRead(10));
-  }else if (ifConnected){
-    digitalWrite(ledPin, LOW);
-  }else{
-    digitalWrite(ledPin, HIGH);
-  }
-    if (WiFi.status() != WL_CONNECTED){ //check connection to network
-      ifConnected = false;
-      Serial.println("Dropped from network, attempting to recconect");
-      WiFi.begin(ssid, password); //connect to network
+  
+  connectToWiFi(wifiSsid, wifiPassword);
 
-      // print the ip address
-      Serial.println("WiFi connected");
-      Serial.println("IP address: ");
-      Serial.println(WiFi.localIP());
-    }else if (!client.connected()) {
-      // try to connect to the target ip
-      if (!client.connect(destIp, destPort)) {
-        Serial.println("connection to client failed");
-        ifConnected = false;
-        // try to recconnect to network
-        //WiFi.disconnect();
-      }else{
-        ifConnected = true;
-      }   
-    }
-    vTaskDelay(500 / portTICK_RATE_MS);  // otherwise the main task wastes half                                    // of the cpu cycles
+  vTaskDelay(500 / portTICK_RATE_MS); 
 }
+
+
